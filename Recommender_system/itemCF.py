@@ -3,7 +3,7 @@ Item collaborating filter algorithm
 Author: zhs
 Date: July 1, 2020
 """
-import json
+import pickle
 import os
 import pandas as pd
 import numpy as np
@@ -13,71 +13,54 @@ from sklearn.model_selection import train_test_split
 class ItemCF:
     def __init__(self, file_path):
         self.train_df, self.test_dict = self.load_data(file_path)
-        self.train_df = self.train_df.drop('userID', axis=1)
         print(self.train_df.index, self.train_df.columns)
         print("Test dictionary: ", self.test_dict)
         self.item_sim = self.itemSim()
 
     def load_data(self, file_path):
-        np.random.seed(0)
-        if os.path.exists('data/ml-1m/train_df.csv') and os.path.exists('data/ml-1m/test_df.csv'):
-            print("加载训练集和测试集...")
-            test_dict = dict()
-            test_df = pd.read_csv('data/ml-1m/test_df.csv', index_col=None)
-            for item in test_df.values:
-                user_id = item[0]
-                movie_id = item[1]
-                rate = item[2]
-                test_dict.setdefault(user_id, {})
-                test_dict[user_id][movie_id] = rate
-            return pd.read_csv('data/ml-1m/train_df.csv'), test_dict
-        else:
-            ratings = pd.read_table(file_path, header=None, sep="::", names=['userID', 'movieID', 'rate', 'timestamp'])
-            train_df, test_df = train_test_split(ratings, test_size=0.2)
+        print("加载训练集和测试集...")
+        ratings = pd.read_table(file_path, header=None, sep="::", names=['userID', 'movieID', 'rate', 'timestamp'])
+        train_df, test_df = train_test_split(ratings, test_size=0.2, random_state=0)  # 固定random_state每次生成的都相同)
 
-            user_dict = train_df.groupby('userID')['userID'].count()
-            movie_dict = train_df.groupby('movieID')['movieID'].count()
-            # print("userID number: ", user_dict.keys())
-            # print("movieID number: ", movie_dict.keys())
+        user_dict = train_df.groupby('userID')['userID'].count()
+        movie_dict = train_df.groupby('movieID')['movieID'].count()
+        # print("userID number: ", user_dict.keys())
+        # print("movieID number: ", movie_dict.keys())
 
-            init_data = np.zeros([len(user_dict), len(movie_dict)])
-            init_df = pd.DataFrame(init_data, index=user_dict.keys(), columns=movie_dict.keys())  # 用于构建同现矩阵的DataFrame
-            test_dict = {}
+        init_data = np.zeros([len(user_dict), len(movie_dict)])
+        R_df = pd.DataFrame(init_data, index=user_dict.keys(), columns=movie_dict.keys())  # 用于构建同现矩阵的DataFrame
+        test_dict = {}
 
-            for item in train_df.values:
-                user_id = item[0]
-                movie_id = item[1]
-                rate = item[2]
-                init_df.at[user_id, movie_id] = rate
+        for item in train_df.values:
+            user_id = item[0]
+            movie_id = item[1]
+            rate = item[2]
+            R_df.at[user_id, movie_id] = rate
 
-            for item in test_df.values:
-                user_id = item[0]
-                movie_id = item[1]
-                rate = item[2]
-                test_dict.setdefault(user_id, {})
-                test_dict[user_id][movie_id] = rate
+        for item in test_df.values:
+            user_id = item[0]
+            movie_id = item[1]
+            rate = item[2]
+            test_dict.setdefault(user_id, {})
+            test_dict[user_id][movie_id] = rate
 
-            init_df.to_csv('data/ml-1m/train_df.csv')
-            test_df.to_csv('data/ml-1m/test_df.csv', index=None)
-
-            return init_df, test_df
+        return R_df, test_dict
 
     def readComatrix(self):
-        if os.path.exists('data/ml-1m/co_matrix2.csv'):
+        if os.path.exists('data/ml-1m/co_matrix.csv'):
             print("加载同现矩阵...")
-            return pd.read_csv('data/ml-1m/co_matrix2.csv')
+            return pd.read_csv('data/ml-1m/co_matrix.csv')
         else:
             df = self.train_df.copy()
             co_occurence = np.zeros([len(df.columns), len(df.columns)])
             print(np.shape(co_occurence))
             co_df = pd.DataFrame(co_occurence, index=df.columns, columns=df.columns)
 
-            for k in df.index:
-                if k == 0:
-                    continue
-                print("user: ", k)
-                temp_df = df.loc[k, :]
-                temp_df = temp_df[temp_df > 0]
+            for u in df.index:
+                print("user: ", u)
+                temp_df = df.loc[u, :]  # 加载第u个用户的评分信息
+                temp_df = temp_df[temp_df > 0]  # 获取有评分的DataFrame
+                # 同现矩阵含义：同时喜欢i，j物品的用户数；对称矩阵
                 for i in range(len(temp_df.index)-1):
                     for j in range(i+1, len(temp_df.index)):
                         id_i = temp_df.index[i]
@@ -86,22 +69,20 @@ class ItemCF:
                         co_df.at[id_j, id_i] += 1
 
             print(co_df)
-            co_df.to_csv('data/ml-1m/co_matrix2.csv')
+            co_df.to_csv('data/ml-1m/co_matrix.csv')
             return co_df
 
     def itemSim(self):
-        if os.path.exists('data/ml-1m/item_sim2.json'):
+        if os.path.exists('data/ml-1m/item_sim.dict'):
             print("物品相似度从文件加载...")
-            return json.load(open('data/ml-1m/item_sim2.json', 'r'))
+            return pickle.load(open('data/ml-1m/item_sim.dict', 'rb'))
         else:
             df = self.train_df.copy()
             user_num = len(df.index)
-            N = df.apply(lambda x: user_num - x.value_counts().get(0, 0), axis=0)
-            print("N(i):", N.index)
-            print(N.values)
+            N = df.apply(lambda x: user_num - x.value_counts().get(0, 0), axis=0)  # 喜欢i物品的用户数
+            print("N(i):", N)
 
             co_matrix = self.readComatrix()
-            # print(co_matrix.columns)
             co_matrix = co_matrix.reindex(index=co_matrix['movieID'])
 
             co_matrix = co_matrix.drop('movieID', axis=1)
@@ -114,7 +95,7 @@ class ItemCF:
 
             for i in co_matrix.columns:
                 print("Movie ID: ", i)
-                item_sim.setdefault(i, {})
+                item_sim.setdefault(int(i), {})
                 temp_df = co_matrix.loc[:, i]  # 加载i列
                 temp_df = temp_df[temp_df > 0]
                 for j in temp_df.index:
@@ -122,12 +103,11 @@ class ItemCF:
                     if N.index[j] == '792':
                         print(cuv)
                     j = N.index[j]
-                    # print(N[j])  # j是int64类型的
+                    i = int(i)
                     similarity = cuv / np.sqrt(N[i] * N[j])
-                    item_sim[i].setdefault(j, 0)
                     item_sim[i][j] = similarity
 
-            json.dump(item_sim, open('data/ml-1m/item_sim2.json', 'w'))
+            pickle.dump(item_sim, open('data/ml-1m/item_sim.dict', 'wb'))
             return item_sim
 
     def recommend(self, user, k=8, nitems=40):
@@ -135,10 +115,9 @@ class ItemCF:
         :param user: 用户
         :param k: k个临近物品
         :param nitems: 返回40个推荐
-        :return:
+        :return: 排序结果
         """
         result = dict()
-        user = int(user) - 1
         u_items = self.train_df.loc[user, :]
         u_items = u_items[u_items > 0]
         # print(u_items)
@@ -149,7 +128,6 @@ class ItemCF:
                     # 如果以前有过评分记录，跳过
                     continue
                 result.setdefault(j, 0)
-
                 result[j] += u_items[i] * wij
 
         return dict(sorted(result.items(), key=lambda x: x[1], reverse=True)[:nitems])
@@ -166,10 +144,9 @@ class ItemCF:
         all_rec_movies = set()
 
         for user in self.train_df.index:
-            user = user + 1
             print("Evaluating the user ID: ", user)
             test_movies = self.test_dict.get(user, {})
-            rec_movies = self.recommend(user)
+            rec_movies = self.recommend(user, k, n_items)
             for movie, rate in rec_movies.items():
                 if int(movie) in test_movies.keys():
                     hit += 1
@@ -184,8 +161,9 @@ class ItemCF:
         print('precision=%.4f \t recall=%.4f \t coverage=%.4f' % (precision, recall, coverage))
 
 
-FILE = 'data/ml-1m/ratings.dat'
-item_cf = ItemCF(FILE)
-# item_cf.readComatrix()
-print(item_cf.recommend('1'))
-item_cf.evaluate()
+if __name__ == '__main__':
+    FILE = 'data/ml-1m/ratings.dat'
+    item_cf = ItemCF(FILE)
+    # item_cf.readComatrix()
+    print(item_cf.recommend(1))
+    item_cf.evaluate()
